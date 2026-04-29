@@ -1,0 +1,581 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<title>Dot Waveform — TikTok</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+html{height:100%;-webkit-text-size-adjust:100%}
+body{
+  background:#000;
+  overflow:hidden;
+  height:100%;
+  height:100dvh;
+  display:flex;
+  align-items:center;
+  justify-content:center;
+  font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
+  -webkit-tap-highlight-color:transparent;
+  touch-action:manipulation;
+}
+#wrap{position:relative}
+canvas{display:block;border-radius:4px}
+#playToggle{
+  position:fixed;
+  top:75%;
+  left:50%;
+  transform:translate(-50%,-50%);
+  z-index:10;
+  background:none;
+  border:none;
+  cursor:pointer;
+  padding:16px;
+  display:none;
+  opacity:.7;
+  transition:opacity .2s;
+}
+#playToggle svg{
+  width:28px;
+  height:28px;
+  display:block;
+}
+#playToggle:hover,#playToggle:active{opacity:1}
+.toolbar{
+  position:fixed;
+  bottom:max(28px, env(safe-area-inset-bottom, 0px));
+  left:50%;
+  transform:translateX(-50%);
+  display:flex;
+  gap:10px;
+  z-index:10;
+}
+#recBtn{
+  position:fixed;
+  bottom:max(28px, env(safe-area-inset-bottom, 0px));
+  right:max(24px, env(safe-area-inset-right, 0px));
+  z-index:10;
+}
+.btn{
+  background:rgba(255,255,255,.06);
+  border:1px solid rgba(255,255,255,.12);
+  color:rgba(255,255,255,.7);
+  padding:12px 28px;
+  border-radius:28px;
+  font-size:13px;
+  letter-spacing:1.2px;
+  cursor:pointer;
+  transition:all .25s;
+  backdrop-filter:blur(8px);
+  -webkit-backdrop-filter:blur(8px);
+  text-transform:uppercase;
+  user-select:none;
+  -webkit-user-select:none;
+  min-height:44px;
+  display:flex;
+  align-items:center;
+  justify-content:center;
+}
+.btn:hover,.btn:active{background:rgba(255,255,255,.14);color:#fff}
+.btn.rec{border-color:rgba(255,80,80,.5);color:rgba(255,120,120,.9)}
+.btn.rec:hover,.btn.rec:active{background:rgba(255,80,80,.15)}
+#fileInput{display:none}
+.drop{
+  position:fixed;inset:0;
+  display:flex;align-items:center;justify-content:center;
+  z-index:999;
+  background:rgba(0,0,0,.85);
+  opacity:0;pointer-events:none;
+  transition:opacity .2s;
+}
+.drop.on{opacity:1}
+.drop span{color:rgba(255,255,255,.5);font-size:16px;letter-spacing:2px}
+.hidden{display:none!important}
+#status{
+  position:fixed;
+  top:max(16px, env(safe-area-inset-top, 0px));
+  left:50%;
+  transform:translateX(-50%);
+  z-index:20;
+  color:rgba(255,255,255,.6);
+  font-size:11px;
+  letter-spacing:1px;
+  text-transform:uppercase;
+  pointer-events:none;
+  opacity:0;
+  transition:opacity .4s;
+}
+#status.show{opacity:1}
+</style>
+</head>
+<body>
+<video id="bgVideo" src="bg-video.mp4" loop muted playsinline webkit-playsinline preload="auto" style="display:none"></video>
+<div id="wrap"><canvas id="c"></canvas></div>
+
+<div id="status"></div>
+
+<button id="playToggle" aria-label="Play/Pause">
+  <svg id="playIcon" width="15" height="15" viewBox="0 0 15 15" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M3.5 2.5L12.5 7.5L3.5 12.5V2.5Z" fill="#F4F2E6"/></svg>
+  <svg id="pauseIcon" width="15" height="15" viewBox="0 0 15 15" fill="none" xmlns="http://www.w3.org/2000/svg" style="display:none"><rect x="3.5" y="2" width="2.8" height="11" rx="0.5" fill="#F4F2E6"/><rect x="8.7" y="2" width="2.8" height="11" rx="0.5" fill="#F4F2E6"/></svg>
+</button>
+
+<div class="toolbar" id="toolbar">
+  <label class="btn" for="fileInput" id="loadBtn">Load Audio</label>
+  <input type="file" id="fileInput" accept="audio/*,.mp3,.m4a,.wav,.aac,.ogg">
+</div>
+<button class="btn" id="recBtn" style="display:none">Record</button>
+<div class="drop" id="drop"><span>DROP AUDIO FILE</span></div>
+
+<script>
+(() => {
+  const canvas = document.getElementById('c');
+  const ctx = canvas.getContext('2d');
+  const statusEl = document.getElementById('status');
+
+  let statusTimer;
+  function showStatus(msg, ms) {
+    statusEl.textContent = msg;
+    statusEl.classList.add('show');
+    clearTimeout(statusTimer);
+    if (ms) statusTimer = setTimeout(() => statusEl.classList.remove('show'), ms);
+  }
+  function hideStatus() {
+    statusEl.classList.remove('show');
+    clearTimeout(statusTimer);
+  }
+
+  const ASPECT = 9 / 16;
+  const RENDER_W = 1080;
+  const RENDER_H = 1920;
+
+  function fitCanvas() {
+    const maxH = innerHeight * 0.92;
+    const maxW = innerWidth * 0.95;
+    let h = maxH;
+    let w = h * ASPECT;
+    if (w > maxW) { w = maxW; h = w / ASPECT; }
+    canvas.style.width = Math.round(w) + 'px';
+    canvas.style.height = Math.round(h) + 'px';
+  }
+  canvas.width = RENDER_W;
+  canvas.height = RENDER_H;
+  fitCanvas();
+  addEventListener('resize', fitCanvas);
+
+  const cx = RENDER_W / 2;
+  const cy = RENDER_H / 3;
+  const unit = RENDER_W / 24;
+
+  const D = 0.7071;
+  const R1 = 2.1, R2 = 3.3, R3 = 4.5;
+  const RAW = [
+    [0,-R1],[0,-R2],[0,-R3],
+    [R1*D,-R1*D],[R2*D,-R2*D],[R3*D,-R3*D],
+    [R1,0],[R2,0],[R3,0],
+    [R1*D,R1*D],[R2*D,R2*D],[R3*D,R3*D],
+    [0,R1],[0,R2],[0,R3],
+    [-R1*D,R1*D],[-R2*D,R2*D],[-R3*D,R3*D],
+    [-R1,0],[-R2,0],[-R3,0],
+    [-R1*D,-R1*D],[-R2*D,-R2*D],[-R3*D,-R3*D],
+  ];
+
+  const BASE_R = RENDER_W / 100;
+
+  const dots = RAW.map(([x, y], i) => {
+    const d = Math.hypot(x, y);
+    return {
+      bx: cx + x * unit,
+      by: cy + y * unit,
+      nx: x / d,
+      ny: y / d,
+      dist: d,
+      arm: Math.floor(i / 3),
+      ring: i % 3,
+      r: BASE_R,
+    };
+  });
+
+  const bgVideo = document.getElementById('bgVideo');
+
+  let pos = new Float32Array(24);
+  let vel = new Float32Array(24);
+  let smoothFeather = new Float32Array(24);
+  let armEnergy = new Float32Array(8);
+
+  // ── Audio ──
+  let audioCtx, analyser, src, buf, audioDest;
+  let freqData, waveData;
+  let playing = false, t0 = 0, off = 0;
+
+  function initAudioCtx() {
+    if (audioCtx) return;
+    audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    analyser = audioCtx.createAnalyser();
+    analyser.fftSize = 2048;
+    analyser.smoothingTimeConstant = 0.65;
+    analyser.connect(audioCtx.destination);
+    audioDest = audioCtx.createMediaStreamDestination();
+    analyser.connect(audioDest);
+    freqData = new Uint8Array(analyser.frequencyBinCount);
+    waveData = new Uint8Array(analyser.frequencyBinCount);
+  }
+
+  async function load(file) {
+    initAudioCtx();
+    if (audioCtx.state === 'suspended') await audioCtx.resume();
+    showStatus('Loading…');
+    try {
+      buf = await audioCtx.decodeAudioData(await file.arrayBuffer());
+    } catch (e) {
+      showStatus('Could not decode audio', 3000);
+      return;
+    }
+    off = 0;
+    document.getElementById('playToggle').style.display = 'block';
+    document.getElementById('recBtn').style.display = 'block';
+    document.getElementById('toolbar').classList.add('hidden');
+    updateToggleIcon();
+    hideStatus();
+  }
+
+  function updateToggleIcon() {
+    document.getElementById('playIcon').style.display = playing ? 'none' : '';
+    document.getElementById('pauseIcon').style.display = playing ? '' : 'none';
+  }
+
+  function play() {
+    if (src) try { src.stop(); } catch {}
+    src = audioCtx.createBufferSource();
+    src.buffer = buf;
+    src.connect(analyser);
+    src.start(0, off);
+    t0 = audioCtx.currentTime - off;
+    playing = true;
+    updateToggleIcon();
+    bgVideo.currentTime = off;
+    bgVideo.play().catch(() => {});
+    src.onended = () => {
+      if (playing) {
+        playing = false; off = 0;
+        updateToggleIcon();
+        bgVideo.pause();
+        if (recorder && recorder.state === 'recording') stopRecording();
+      }
+    };
+  }
+
+  function pause() {
+    if (src) { src.stop(); off = audioCtx.currentTime - t0; }
+    playing = false;
+    updateToggleIcon();
+    bgVideo.pause();
+  }
+
+  document.getElementById('fileInput').addEventListener('change', e => {
+    if (e.target.files[0]) load(e.target.files[0]);
+  });
+  document.getElementById('playToggle').addEventListener('click', () => {
+    initAudioCtx();
+    if (audioCtx.state === 'suspended') audioCtx.resume();
+    playing ? pause() : play();
+  });
+
+  // ── Drag-drop (desktop) ──
+  let dc = 0;
+  const dz = document.getElementById('drop');
+  document.addEventListener('dragenter', e => { e.preventDefault(); dc++; dz.classList.add('on'); });
+  document.addEventListener('dragleave', e => { e.preventDefault(); if (--dc <= 0) { dz.classList.remove('on'); dc = 0; } });
+  document.addEventListener('dragover', e => e.preventDefault());
+  document.addEventListener('drop', e => {
+    e.preventDefault(); dc = 0; dz.classList.remove('on');
+    const f = e.dataTransfer.files[0];
+    if (f && f.type.startsWith('audio/')) load(f);
+  });
+
+  // ── Recording ──
+  let recorder = null;
+  let recordedChunks = [];
+
+  function getBestFormat() {
+    const candidates = [
+      'video/mp4;codecs=avc1.42E01E,mp4a.40.2',
+      'video/mp4;codecs=avc1,mp4a.40.2',
+      'video/mp4;codecs=avc1.42E01E,opus',
+      'video/mp4',
+      'video/webm;codecs=h264,opus',
+      'video/webm;codecs=vp9,opus',
+      'video/webm;codecs=vp8,opus',
+      'video/webm',
+    ];
+    for (const t of candidates) {
+      try {
+        if (MediaRecorder.isTypeSupported(t)) {
+          const ext = t.startsWith('video/mp4') ? 'mp4' : 'webm';
+          return { mime: t, ext };
+        }
+      } catch {}
+    }
+    return { mime: '', ext: 'webm' };
+  }
+
+  function canRecord() {
+    return typeof MediaRecorder !== 'undefined'
+      && typeof canvas.captureStream === 'function';
+  }
+
+  async function saveBlob(blob, ext) {
+    const ts = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+    const filename = `waveform-${ts}.${ext}`;
+
+    if (navigator.share && navigator.canShare) {
+      const file = new File([blob], filename, { type: blob.type });
+      if (navigator.canShare({ files: [file] })) {
+        try {
+          await navigator.share({ files: [file], title: 'Waveform Recording' });
+          return;
+        } catch (e) {
+          if (e.name === 'AbortError') return;
+        }
+      }
+    }
+
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(url), 10000);
+  }
+
+  async function startRecording() {
+    if (!canRecord()) {
+      showStatus('Recording not supported in this browser', 3000);
+      return;
+    }
+
+    const fmt = getBestFormat();
+    if (!fmt.mime) {
+      showStatus('No supported recording format found', 3000);
+      return;
+    }
+
+    const videoStream = canvas.captureStream(30);
+    const combined = new MediaStream([
+      ...videoStream.getTracks(),
+      ...audioDest.stream.getTracks(),
+    ]);
+
+    try {
+      recorder = new MediaRecorder(combined, {
+        mimeType: fmt.mime,
+        videoBitsPerSecond: 6_000_000,
+      });
+    } catch (e) {
+      showStatus('Could not start recorder', 3000);
+      return;
+    }
+
+    recordedChunks = [];
+    recorder.ondataavailable = e => { if (e.data.size > 0) recordedChunks.push(e.data); };
+    recorder.onstop = () => {
+      hideStatus();
+      const blob = new Blob(recordedChunks, { type: fmt.mime });
+      saveBlob(blob, fmt.ext);
+    };
+
+    if (audioCtx.state === 'suspended') await audioCtx.resume();
+    off = 0;
+
+    bgVideo.currentTime = 0;
+    await new Promise(r => {
+      bgVideo.onseeked = () => r();
+      setTimeout(r, 300);
+    });
+
+    if (src) try { src.stop(); } catch {}
+    src = audioCtx.createBufferSource();
+    src.buffer = buf;
+    src.connect(analyser);
+
+    try { await bgVideo.play(); } catch {}
+    src.start(0, 0);
+    t0 = audioCtx.currentTime;
+    playing = true;
+    updateToggleIcon();
+    src.onended = () => {
+      if (playing) {
+        playing = false; off = 0;
+        updateToggleIcon();
+        bgVideo.pause();
+        stopRecording();
+      }
+    };
+
+    recorder.start(1000);
+    showStatus('Recording…');
+
+    const btn = document.getElementById('recBtn');
+    btn.textContent = 'Stop Rec';
+    btn.classList.add('rec');
+  }
+
+  function stopRecording() {
+    if (recorder && recorder.state === 'recording') recorder.stop();
+    const btn = document.getElementById('recBtn');
+    btn.textContent = 'Record';
+    btn.classList.remove('rec');
+    showStatus('Saving…');
+  }
+
+  document.getElementById('recBtn').addEventListener('click', () => {
+    initAudioCtx();
+    if (audioCtx.state === 'suspended') audioCtx.resume();
+    if (recorder && recorder.state === 'recording') {
+      pause();
+      stopRecording();
+    } else {
+      startRecording();
+    }
+  });
+
+  // ── Waveform analysis ──
+  function getAmplitudes() {
+    if (!analyser || !playing) return null;
+    analyser.getByteFrequencyData(freqData);
+    analyser.getByteTimeDomainData(waveData);
+
+    const n = freqData.length;
+    let waveRms = 0;
+    for (let i = 0; i < waveData.length; i++) {
+      const v = (waveData[i] - 128) / 128;
+      waveRms += v * v;
+    }
+    waveRms = Math.sqrt(waveRms / waveData.length);
+
+    const amps = new Float32Array(24);
+    const bassEnd = Math.floor(n * 0.08);
+    const midEnd = Math.floor(n * 0.35);
+
+    let bassSum = 0;
+    for (let j = 0; j < bassEnd; j++) bassSum += freqData[j];
+    const bassLevel = bassSum / bassEnd / 255;
+
+    const midRange = midEnd - bassEnd;
+    const highRange = n - midEnd;
+    const midSlice = Math.floor(midRange / 8);
+    const highSlice = Math.floor(highRange / 8);
+
+    const rawArm = new Float32Array(8);
+    for (let arm = 0; arm < 8; arm++) {
+      let midSum = 0;
+      const mStart = bassEnd + arm * midSlice;
+      for (let j = mStart; j < mStart + midSlice; j++) midSum += freqData[j];
+      let highSum = 0;
+      const hStart = midEnd + arm * highSlice;
+      for (let j = hStart; j < hStart + highSlice; j++) highSum += freqData[j];
+      rawArm[arm] = (midSum / midSlice / 255) * 0.5 + (highSum / highSlice / 255) * 0.3 + bassLevel * 0.2;
+    }
+
+    for (let arm = 0; arm < 8; arm++) {
+      const prev = (arm + 7) % 8;
+      const next = (arm + 1) % 8;
+      const blended = rawArm[arm] * 0.5 + rawArm[prev] * 0.25 + rawArm[next] * 0.25;
+      amps[arm * 3] = bassLevel + waveRms * 0.5;
+      amps[arm * 3 + 1] = blended * 0.85 + bassLevel * 0.35;
+      amps[arm * 3 + 2] = blended * 0.7 + bassLevel * 0.2 + waveRms * 0.3;
+    }
+
+    return amps;
+  }
+
+  // ── Draw ──
+  function drawDot(x, y, r, feather) {
+    ctx.fillStyle = '#F4F2E6';
+    ctx.beginPath();
+    ctx.arc(x, y, r, 0, Math.PI * 2);
+    ctx.fill();
+
+    if (feather > 0.03) {
+      const t = Math.min(feather, 1);
+      const spread = r * t * 3;
+      const g = ctx.createRadialGradient(x, y, r, x, y, r + spread);
+      g.addColorStop(0, `rgba(244,242,230,${t * 0.45})`);
+      g.addColorStop(0.3, `rgba(244,242,230,${t * 0.2})`);
+      g.addColorStop(0.6, `rgba(244,242,230,${t * 0.06})`);
+      g.addColorStop(1, 'rgba(244,242,230,0)');
+      ctx.fillStyle = g;
+      ctx.beginPath();
+      ctx.arc(x, y, r + spread, 0, Math.PI * 2);
+      ctx.fill();
+    }
+  }
+
+  // ── Animation loop ──
+  const RING_TRAVEL = [16, 28, 42];
+  const STIFFNESS = 0.18;
+  const DAMPING = 0.72;
+  const RING_DELAY = [0, 0.7, 0.45];
+
+  let vdx = 0, vdy = 0, vdw = 0, vdh = 0, vidReady = false;
+  bgVideo.addEventListener('loadedmetadata', () => {
+    const scale = Math.max(RENDER_W / bgVideo.videoWidth, RENDER_H / bgVideo.videoHeight);
+    vdw = bgVideo.videoWidth * scale;
+    vdh = bgVideo.videoHeight * scale;
+    vdx = (RENDER_W - vdw) / 2;
+    vdy = (RENDER_H - vdh) / 2;
+    vidReady = true;
+  });
+
+  function frame() {
+    requestAnimationFrame(frame);
+
+    if (vidReady && bgVideo.readyState >= 2) {
+      ctx.drawImage(bgVideo, vdx, vdy, vdw, vdh);
+    } else {
+      ctx.fillStyle = '#000';
+      ctx.fillRect(0, 0, RENDER_W, RENDER_H);
+    }
+
+    const amps = getAmplitudes();
+
+    for (let arm = 0; arm < 8; arm++) {
+      const raw = amps ? amps[arm * 3] : 0;
+      const rate = raw > armEnergy[arm] ? 0.5 : 0.07;
+      armEnergy[arm] += (raw - armEnergy[arm]) * rate;
+    }
+
+    for (let i = 0; i < dots.length; i++) {
+      const dot = dots[i];
+      let target = 0, targetF = 0;
+
+      if (amps) {
+        const directAmp = amps[i];
+        const armSmoothed = armEnergy[dot.arm];
+        const blend = RING_DELAY[dot.ring];
+        const a = directAmp * (1 - blend) + armSmoothed * blend;
+        target = a * RING_TRAVEL[dot.ring];
+        targetF = a;
+      }
+
+      const force = (target - pos[i]) * STIFFNESS;
+      vel[i] = (vel[i] + force) * DAMPING;
+      pos[i] += vel[i];
+
+      const fRate = targetF > smoothFeather[i] ? 0.35 : 0.06;
+      smoothFeather[i] += (targetF - smoothFeather[i]) * fRate;
+
+      drawDot(
+        dot.bx + dot.nx * pos[i],
+        dot.by + dot.ny * pos[i],
+        dot.r, smoothFeather[i]
+      );
+    }
+  }
+
+  requestAnimationFrame(frame);
+})();
+</script>
+</body>
+</html>
