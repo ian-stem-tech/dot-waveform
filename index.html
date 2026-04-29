@@ -206,19 +206,19 @@ canvas{display:block;border-radius:4px}
   let armEnergy = new Float32Array(8);
 
   // ── Audio ──
-  let audioCtx, analyser, src, buf, audioDest;
+  let audioCtx, analyser, src, buf, recDest;
   let freqData, waveData;
   let playing = false, t0 = 0, off = 0;
 
   function initAudioCtx() {
     if (audioCtx) return;
-    audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    const AC = window.AudioContext || window.webkitAudioContext;
+    audioCtx = new AC({ sampleRate: 48000 });
     analyser = audioCtx.createAnalyser();
     analyser.fftSize = 1024;
     analyser.smoothingTimeConstant = 0.65;
     analyser.connect(audioCtx.destination);
-    audioDest = audioCtx.createMediaStreamDestination();
-    analyser.connect(audioDest);
+    recDest = audioCtx.createMediaStreamDestination();
     freqData = new Uint8Array(analyser.frequencyBinCount);
     waveData = new Uint8Array(analyser.frequencyBinCount);
   }
@@ -407,30 +407,6 @@ canvas{display:block;border-radius:4px}
       return;
     }
 
-    const videoStream = canvas.captureStream(30);
-    const combined = new MediaStream([
-      ...videoStream.getTracks(),
-      ...audioDest.stream.getTracks(),
-    ]);
-
-    try {
-      recorder = new MediaRecorder(combined, {
-        mimeType: fmt.mime,
-        videoBitsPerSecond: 4_000_000,
-      });
-    } catch (e) {
-      showStatus('Could not start recorder', 3000);
-      return;
-    }
-
-    recordedChunks = [];
-    recorder.ondataavailable = e => { if (e.data.size > 0) recordedChunks.push(e.data); };
-    recorder.onstop = () => {
-      hideStatus();
-      const blob = new Blob(recordedChunks, { type: fmt.mime });
-      saveBlob(blob, fmt.ext);
-    };
-
     if (audioCtx.state === 'suspended') await audioCtx.resume();
     off = 0;
 
@@ -444,6 +420,32 @@ canvas{display:block;border-radius:4px}
     src = audioCtx.createBufferSource();
     src.buffer = buf;
     src.connect(analyser);
+    src.connect(recDest);
+
+    const videoStream = canvas.captureStream(30);
+    const combined = new MediaStream([
+      ...videoStream.getTracks(),
+      ...recDest.stream.getTracks(),
+    ]);
+
+    try {
+      recorder = new MediaRecorder(combined, {
+        mimeType: fmt.mime,
+        videoBitsPerSecond: 4_000_000,
+        audioBitsPerSecond: 128_000,
+      });
+    } catch (e) {
+      showStatus('Could not start recorder', 3000);
+      return;
+    }
+
+    recordedChunks = [];
+    recorder.ondataavailable = e => { if (e.data.size > 0) recordedChunks.push(e.data); };
+    recorder.onstop = () => {
+      hideStatus();
+      const blob = new Blob(recordedChunks, { type: fmt.mime });
+      saveBlob(blob, fmt.ext);
+    };
 
     try { await bgVideo.play(); } catch {}
     src.start(0, 0);
@@ -459,7 +461,7 @@ canvas{display:block;border-radius:4px}
       }
     };
 
-    recorder.start(1000);
+    recorder.start(200);
     showStatus('Recording…');
 
     const btn = document.getElementById('recBtn');
