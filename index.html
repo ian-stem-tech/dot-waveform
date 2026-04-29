@@ -123,7 +123,7 @@ canvas{display:block;border-radius:4px}
 
 <div class="toolbar" id="toolbar">
   <label class="btn" for="fileInput" id="loadBtn">Load Audio</label>
-  <input type="file" id="fileInput" accept="audio/*">
+  <input type="file" id="fileInput">
 </div>
 <button class="btn" id="recBtn" style="display:none">Record</button>
 <div class="drop" id="drop"><span>DROP AUDIO FILE</span></div>
@@ -206,9 +206,13 @@ canvas{display:block;border-radius:4px}
   let armEnergy = new Float32Array(8);
 
   // ── Audio ──
-  let audioCtx, analyser, src, buf, recDest;
+  let audioCtx, analyser, recDest;
   let freqData, waveData;
   let playing = false, t0 = 0, off = 0;
+
+  let buf = null, src = null;
+  let audioEl = null, mediaSource = null, elBlobUrl = null;
+  let useElementMode = false;
 
   function initAudioCtx() {
     if (audioCtx) return;
@@ -224,9 +228,7 @@ canvas{display:block;border-radius:4px}
   }
 
   function readFileAsArrayBuffer(file) {
-    if (file.arrayBuffer) {
-      return file.arrayBuffer();
-    }
+    if (file.arrayBuffer) return file.arrayBuffer();
     return new Promise((resolve, reject) => {
       const reader = new FileReader();
       reader.onload = () => resolve(reader.result);
@@ -235,10 +237,12 @@ canvas{display:block;border-radius:4px}
     });
   }
 
-  function decodeAudio(arrayBuffer) {
-    return new Promise((resolve, reject) => {
-      audioCtx.decodeAudioData(arrayBuffer, resolve, reject);
-    });
+  function initAudioEl() {
+    if (audioEl) return;
+    audioEl = new Audio();
+    audioEl.playsInline = true;
+    audioEl.setAttribute('webkit-playsinline', '');
+    audioEl.crossOrigin = 'anonymous';
   }
 
   async function load(file) {
@@ -248,29 +252,51 @@ canvas{display:block;border-radius:4px}
     }
     showStatus('Loading…');
 
-    let rawBuffer;
+    let decoded = false;
     try {
-      rawBuffer = await readFileAsArrayBuffer(file);
-    } catch (e) {
-      showStatus('Could not read file', 3000);
-      return;
-    }
+      const rawBuffer = await readFileAsArrayBuffer(file);
+      if (rawBuffer && rawBuffer.byteLength > 0) {
+        const result = await new Promise((resolve, reject) => {
+          audioCtx.decodeAudioData(rawBuffer, resolve, reject);
+        });
+        if (result && result.length > 0) {
+          buf = result;
+          decoded = true;
+        }
+      }
+    } catch {}
 
-    if (!rawBuffer || rawBuffer.byteLength === 0) {
-      showStatus('File is empty', 3000);
-      return;
-    }
+    if (decoded) {
+      useElementMode = false;
+    } else {
+      try {
+        initAudioEl();
+        if (elBlobUrl) URL.revokeObjectURL(elBlobUrl);
+        elBlobUrl = URL.createObjectURL(file);
+        audioEl.src = elBlobUrl;
+        audioEl.load();
 
-    try {
-      buf = await decodeAudio(rawBuffer);
-    } catch (e) {
-      showStatus('Could not decode audio', 3000);
-      return;
-    }
+        await new Promise((resolve, reject) => {
+          let settled = false;
+          const ok = () => { if (!settled) { settled = true; resolve(); } };
+          const fail = () => { if (!settled) { settled = true; reject(); } };
+          audioEl.addEventListener('canplaythrough', ok, { once: true });
+          audioEl.addEventListener('error', fail, { once: true });
+          setTimeout(fail, 15000);
+        });
 
-    if (!buf || buf.length === 0) {
-      showStatus('Audio file has no data', 3000);
-      return;
+        if (!mediaSource) {
+          mediaSource = audioCtx.createMediaElementSource(audioEl);
+          mediaSource.connect(analyser);
+          mediaSource.connect(recDest);
+        }
+
+        useElementMode = true;
+        buf = null;
+      } catch {
+        showStatus('Could not load audio file', 3000);
+        return;
+      }
     }
 
     off = 0;
@@ -286,29 +312,41 @@ canvas{display:block;border-radius:4px}
     document.getElementById('pauseIcon').style.display = playing ? '' : 'none';
   }
 
+  function onAudioEnded() {
+    if (!playing) return;
+    playing = false; off = 0;
+    updateToggleIcon();
+    bgVideo.pause();
+    if (recorder && recorder.state === 'recording') stopRecording();
+  }
+
   function play() {
-    if (src) try { src.stop(); } catch {}
-    src = audioCtx.createBufferSource();
-    src.buffer = buf;
-    src.connect(analyser);
-    src.start(0, off);
-    t0 = audioCtx.currentTime - off;
+    if (useElementMode) {
+      audioEl.currentTime = off;
+      audioEl.play().catch(() => {});
+      audioEl.onended = onAudioEnded;
+    } else {
+      if (src) try { src.stop(); } catch {}
+      src = audioCtx.createBufferSource();
+      src.buffer = buf;
+      src.connect(analyser);
+      src.start(0, off);
+      t0 = audioCtx.currentTime - off;
+      src.onended = onAudioEnded;
+    }
     playing = true;
     updateToggleIcon();
     bgVideo.currentTime = off;
     bgVideo.play().catch(() => {});
-    src.onended = () => {
-      if (playing) {
-        playing = false; off = 0;
-        updateToggleIcon();
-        bgVideo.pause();
-        if (recorder && recorder.state === 'recording') stopRecording();
-      }
-    };
   }
 
   function pause() {
-    if (src) { src.stop(); off = audioCtx.currentTime - t0; }
+    if (useElementMode) {
+      off = audioEl.currentTime;
+      audioEl.pause();
+    } else {
+      if (src) { src.stop(); off = audioCtx.currentTime - t0; }
+    }
     playing = false;
     updateToggleIcon();
     bgVideo.pause();
@@ -337,7 +375,7 @@ canvas{display:block;border-radius:4px}
   document.addEventListener('drop', e => {
     e.preventDefault(); dc = 0; dz.classList.remove('on');
     const f = e.dataTransfer.files[0];
-    if (f && f.type.startsWith('audio/')) load(f);
+    if (f) load(f);
   });
 
   // ── Recording ──
@@ -416,11 +454,31 @@ canvas{display:block;border-radius:4px}
       setTimeout(r, 300);
     });
 
-    if (src) try { src.stop(); } catch {}
-    src = audioCtx.createBufferSource();
-    src.buffer = buf;
-    src.connect(analyser);
-    src.connect(recDest);
+    if (useElementMode) {
+      audioEl.currentTime = 0;
+      audioEl.onended = () => {
+        if (playing) {
+          playing = false; off = 0;
+          updateToggleIcon();
+          bgVideo.pause();
+          stopRecording();
+        }
+      };
+    } else {
+      if (src) try { src.stop(); } catch {}
+      src = audioCtx.createBufferSource();
+      src.buffer = buf;
+      src.connect(analyser);
+      src.connect(recDest);
+      src.onended = () => {
+        if (playing) {
+          playing = false; off = 0;
+          updateToggleIcon();
+          bgVideo.pause();
+          stopRecording();
+        }
+      };
+    }
 
     const videoStream = canvas.captureStream(30);
     const combined = new MediaStream([
@@ -448,18 +506,16 @@ canvas{display:block;border-radius:4px}
     };
 
     try { await bgVideo.play(); } catch {}
-    src.start(0, 0);
+
+    if (useElementMode) {
+      await audioEl.play();
+    } else {
+      src.start(0, 0);
+    }
+
     t0 = audioCtx.currentTime;
     playing = true;
     updateToggleIcon();
-    src.onended = () => {
-      if (playing) {
-        playing = false; off = 0;
-        updateToggleIcon();
-        bgVideo.pause();
-        stopRecording();
-      }
-    };
 
     recorder.start(200);
     showStatus('Recording…');
@@ -471,6 +527,7 @@ canvas{display:block;border-radius:4px}
 
   function stopRecording() {
     if (recorder && recorder.state === 'recording') recorder.stop();
+    if (useElementMode && audioEl) audioEl.pause();
     const btn = document.getElementById('recBtn');
     btn.textContent = 'Record';
     btn.classList.remove('rec');
