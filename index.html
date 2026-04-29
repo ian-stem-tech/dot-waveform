@@ -123,7 +123,7 @@ canvas{display:block;border-radius:4px}
 
 <div class="toolbar" id="toolbar">
   <label class="btn" for="fileInput" id="loadBtn">Load Audio</label>
-  <input type="file" id="fileInput" accept="audio/*,.mp3,.m4a,.wav,.aac,.ogg">
+  <input type="file" id="fileInput" accept="audio/*">
 </div>
 <button class="btn" id="recBtn" style="display:none">Record</button>
 <div class="drop" id="drop"><span>DROP AUDIO FILE</span></div>
@@ -223,16 +223,56 @@ canvas{display:block;border-radius:4px}
     waveData = new Uint8Array(analyser.frequencyBinCount);
   }
 
+  function readFileAsArrayBuffer(file) {
+    if (file.arrayBuffer) {
+      return file.arrayBuffer();
+    }
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(reader.result);
+      reader.onerror = () => reject(reader.error);
+      reader.readAsArrayBuffer(file);
+    });
+  }
+
+  function decodeAudio(arrayBuffer) {
+    return new Promise((resolve, reject) => {
+      audioCtx.decodeAudioData(arrayBuffer, resolve, reject);
+    });
+  }
+
   async function load(file) {
     initAudioCtx();
-    if (audioCtx.state === 'suspended') await audioCtx.resume();
+    if (audioCtx.state === 'suspended') {
+      try { await audioCtx.resume(); } catch {}
+    }
     showStatus('Loading…');
+
+    let rawBuffer;
     try {
-      buf = await audioCtx.decodeAudioData(await file.arrayBuffer());
+      rawBuffer = await readFileAsArrayBuffer(file);
+    } catch (e) {
+      showStatus('Could not read file', 3000);
+      return;
+    }
+
+    if (!rawBuffer || rawBuffer.byteLength === 0) {
+      showStatus('File is empty', 3000);
+      return;
+    }
+
+    try {
+      buf = await decodeAudio(rawBuffer);
     } catch (e) {
       showStatus('Could not decode audio', 3000);
       return;
     }
+
+    if (!buf || buf.length === 0) {
+      showStatus('Audio file has no data', 3000);
+      return;
+    }
+
     off = 0;
     document.getElementById('playToggle').style.display = 'block';
     document.getElementById('recBtn').style.display = 'block';
@@ -274,8 +314,13 @@ canvas{display:block;border-radius:4px}
     bgVideo.pause();
   }
 
-  document.getElementById('fileInput').addEventListener('change', e => {
-    if (e.target.files[0]) load(e.target.files[0]);
+  const fileInput = document.getElementById('fileInput');
+  fileInput.addEventListener('change', e => {
+    const file = e.target.files && e.target.files[0];
+    if (file) {
+      load(file);
+      fileInput.value = '';
+    }
   });
   document.getElementById('playToggle').addEventListener('click', () => {
     initAudioCtx();
