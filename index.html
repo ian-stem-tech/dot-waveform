@@ -147,8 +147,9 @@ canvas{display:block;border-radius:4px}
   }
 
   const ASPECT = 9 / 16;
-  const RENDER_W = 1080;
-  const RENDER_H = 1920;
+  const RENDER_W = 720;
+  const RENDER_H = 1280;
+  const TWO_PI = Math.PI * 2;
 
   function fitCanvas() {
     const maxH = innerHeight * 0.92;
@@ -165,7 +166,7 @@ canvas{display:block;border-radius:4px}
   addEventListener('resize', fitCanvas);
 
   const cx = RENDER_W / 2;
-  const cy = RENDER_H / 3;
+  const cy = RENDER_H * 0.15;
   const unit = RENDER_W / 24;
 
   const D = 0.7071;
@@ -213,7 +214,7 @@ canvas{display:block;border-radius:4px}
     if (audioCtx) return;
     audioCtx = new (window.AudioContext || window.webkitAudioContext)();
     analyser = audioCtx.createAnalyser();
-    analyser.fftSize = 2048;
+    analyser.fftSize = 1024;
     analyser.smoothingTimeConstant = 0.65;
     analyser.connect(audioCtx.destination);
     audioDest = audioCtx.createMediaStreamDestination();
@@ -370,7 +371,7 @@ canvas{display:block;border-radius:4px}
     try {
       recorder = new MediaRecorder(combined, {
         mimeType: fmt.mime,
-        videoBitsPerSecond: 6_000_000,
+        videoBitsPerSecond: 4_000_000,
       });
     } catch (e) {
       showStatus('Could not start recorder', 3000);
@@ -491,23 +492,24 @@ canvas{display:block;border-radius:4px}
   }
 
   // ── Draw ──
+  const DOT_COLOR = '#F4F2E6';
+  const GLOW_ZERO = 'rgba(244,242,230,0)';
+
   function drawDot(x, y, r, feather) {
-    ctx.fillStyle = '#F4F2E6';
+    ctx.fillStyle = DOT_COLOR;
     ctx.beginPath();
-    ctx.arc(x, y, r, 0, Math.PI * 2);
+    ctx.arc(x, y, r, 0, TWO_PI);
     ctx.fill();
 
-    if (feather > 0.03) {
-      const t = Math.min(feather, 1);
-      const spread = r * t * 3;
+    if (feather > 0.08) {
+      const t = feather < 1 ? feather : 1;
+      const spread = r * t * 2.5;
       const g = ctx.createRadialGradient(x, y, r, x, y, r + spread);
-      g.addColorStop(0, `rgba(244,242,230,${t * 0.45})`);
-      g.addColorStop(0.3, `rgba(244,242,230,${t * 0.2})`);
-      g.addColorStop(0.6, `rgba(244,242,230,${t * 0.06})`);
-      g.addColorStop(1, 'rgba(244,242,230,0)');
+      g.addColorStop(0, `rgba(244,242,230,${(t * 0.4).toFixed(3)})`);
+      g.addColorStop(1, GLOW_ZERO);
       ctx.fillStyle = g;
       ctx.beginPath();
-      ctx.arc(x, y, r + spread, 0, Math.PI * 2);
+      ctx.arc(x, y, r + spread, 0, TWO_PI);
       ctx.fill();
     }
   }
@@ -517,6 +519,11 @@ canvas{display:block;border-radius:4px}
   const STIFFNESS = 0.18;
   const DAMPING = 0.72;
   const RING_DELAY = [0, 0.7, 0.45];
+
+  const isMobile = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
+  const TARGET_FPS = isMobile ? 30 : 60;
+  const FRAME_BUDGET = 1000 / TARGET_FPS;
+  let lastFrameTime = 0;
 
   let vdx = 0, vdy = 0, vdw = 0, vdh = 0, vidReady = false;
   bgVideo.addEventListener('loadedmetadata', () => {
@@ -528,8 +535,12 @@ canvas{display:block;border-radius:4px}
     vidReady = true;
   });
 
-  function frame() {
+  function frame(now) {
     requestAnimationFrame(frame);
+
+    const delta = now - lastFrameTime;
+    if (delta < FRAME_BUDGET * 0.9) return;
+    lastFrameTime = now;
 
     if (vidReady && bgVideo.readyState >= 2) {
       ctx.drawImage(bgVideo, vdx, vdy, vdw, vdh);
@@ -546,7 +557,7 @@ canvas{display:block;border-radius:4px}
       armEnergy[arm] += (raw - armEnergy[arm]) * rate;
     }
 
-    for (let i = 0; i < dots.length; i++) {
+    for (let i = 0; i < 24; i++) {
       const dot = dots[i];
       let target = 0, targetF = 0;
 
